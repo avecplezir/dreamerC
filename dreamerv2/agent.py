@@ -57,10 +57,12 @@ class Agent(common.Module):
   @tf.function
   def train(self, data, state=None):
     metrics = {}
+    print('data', data)
     state, outputs, mets = self.wm.train(data, state)
     metrics.update(mets)
     start = outputs['post']
-    reward = lambda seq: self.wm.heads['reward'](seq['feat']).mode()
+    print('start', start)
+    reward = lambda seq: self.wm.heads['reward'](seq['feat_recon']).mode()
     metrics.update(self._task_behavior.train(
         self.wm, start, data['is_terminal'], reward))
     if self.config.expl_behavior != 'greedy':
@@ -111,10 +113,11 @@ class WorldModel(common.Module):
     assert len(kl_loss.shape) == 0
     likes = {}
     losses = {'kl': kl_loss}
+    feat_recon = self.rssm.get_feat_rec(post)
     feat = self.rssm.get_feat(post)
     for name, head in self.heads.items():
       grad_head = (name in self.config.grad_heads)
-      inp = feat if grad_head else tf.stop_gradient(feat)
+      inp = feat_recon if grad_head else tf.stop_gradient(feat_recon)
       out = head(inp)
       dists = out if isinstance(out, dict) else {name: out}
       for key, dist in dists.items():
@@ -124,8 +127,13 @@ class WorldModel(common.Module):
     model_loss = sum(
         self.config.loss_scales.get(k, 1.0) * v for k, v in losses.items())
     outs = dict(
-        embed=embed, feat=feat, post=post,
-        prior=prior, likes=likes, kl=kl_value)
+        embed=embed,
+        feat_recon=feat_recon,
+        feat=feat,
+        post=post,
+        prior=prior,
+        action=data['action'],
+        likes=likes, kl=kl_value)
     metrics = {f'{name}_loss': value for name, value in losses.items()}
     metrics['model_kl'] = kl_value.mean()
     metrics['prior_ent'] = self.rssm.get_dist(prior).entropy().mean()
@@ -136,14 +144,17 @@ class WorldModel(common.Module):
   def imagine(self, policy, start, is_terminal, horizon):
     flatten = lambda x: x.reshape([-1] + list(x.shape[2:]))
     start = {k: flatten(v) for k, v in start.items()}
+    print('start', start)
     start['feat'] = self.rssm.get_feat(start)
+    start['feat_recon'] = self.rssm.get_feat_rec(start)
     start['action'] = tf.zeros_like(policy(start['feat']).mode())
     seq = {k: [v] for k, v in start.items()}
     for _ in range(horizon):
       action = policy(tf.stop_gradient(seq['feat'][-1])).sample()
       state = self.rssm.img_step({k: v[-1] for k, v in seq.items()}, action)
       feat = self.rssm.get_feat(state)
-      for key, value in {**state, 'action': action, 'feat': feat}.items():
+      feat_recon = self.rssm.get_feat_rec(state)
+      for key, value in {**state, 'action': action, 'feat': feat, 'feat_recon': feat_recon}.items():
         seq[key].append(value)
     seq = {k: tf.stack(v, 0) for k, v in seq.items()}
     if 'discount' in self.heads:
@@ -191,10 +202,10 @@ class WorldModel(common.Module):
     embed = self.encoder(data)
     states, _ = self.rssm.observe(
         embed[:6, :5], data['action'][:6, :5], data['is_first'][:6, :5])
-    recon = decoder(self.rssm.get_feat(states))[key].mode()[:6]
+    recon = decoder(self.rssm.get_feat_rec(states))[key].mode()[:6]
     init = {k: v[:, -1] for k, v in states.items()}
     prior = self.rssm.imagine(data['action'][:6, 5:], init)
-    openl = decoder(self.rssm.get_feat(prior))[key].mode()
+    openl = decoder(self.rssm.get_feat_rec(prior))[key].mode()
     model = tf.concat([recon[:, :5] + 0.5, openl + 0.5], 1)
     error = (model - truth + 1) / 2
     video = tf.concat([truth, model, error], 2)
@@ -239,7 +250,10 @@ class ActorCritic(common.Module):
       reward = reward_fn(seq)
       seq['reward'], mets1 = self.rewnorm(reward)
       mets1 = {f'reward_{k}': v for k, v in mets1.items()}
+      print('seq', seq)
+      print('start', start)
       target, mets2 = self.target(seq)
+      print('target', target)
       actor_loss, mets3 = self.actor_loss(seq, target)
     with tf.GradientTape() as critic_tape:
       critic_loss, mets4 = self.critic_loss(seq, target)

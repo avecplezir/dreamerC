@@ -66,11 +66,12 @@ class EnsembleRSSM(common.Module):
     return prior
 
   def get_feat(self, state):
-    stoch = self._cast(state['stoch'])
-    if self._discrete:
-      shape = stoch.shape[:-2] + [self._stoch * self._discrete]
-      stoch = tf.reshape(stoch, shape)
-    return tf.concat([stoch, state['deter']], -1)
+    # stoch = self._cast(state['stoch'])
+    # if self._discrete:
+    #   shape = stoch.shape[:-2] + [self._stoch * self._discrete]
+    #   stoch = tf.reshape(stoch, shape)
+    # return tf.concat([stoch, state['deter']], -1)
+      return state['deter']
 
   def get_dist(self, state, ensemble=False):
     if ensemble:
@@ -94,35 +95,46 @@ class EnsembleRSSM(common.Module):
             'b,b...->b...', 1.0 - is_first.astype(x.dtype), x),
         (prev_state, prev_action))
     prior = self.img_step(prev_state, prev_action, sample)
-    x = tf.concat([prior['deter'], embed], -1)
+    x = tf.concat([prev_state['deter'], embed], -1)
     x = self.get('obs_out', tfkl.Dense, self._hidden)(x)
     x = self.get('obs_out_norm', NormLayer, self._norm)(x)
     x = self._act(x)
     stats = self._suff_stats_layer('obs_dist', x)
     dist = self.get_dist(stats)
     stoch = dist.sample() if sample else dist.mode()
-    post = {'stoch': stoch, 'deter': prior['deter'], **stats}
+
+    post = self.img_step(prev_state, prev_action, sample, stoch, stats)
     return post, prior
 
   @tf.function
-  def img_step(self, prev_state, prev_action, sample=True):
-    prev_stoch = self._cast(prev_state['stoch'])
+  def img_step(self, prev_state, prev_action, sample=True, stoch=None, stats=None):
     prev_action = self._cast(prev_action)
-    if self._discrete:
-      shape = prev_stoch.shape[:-2] + [self._stoch * self._discrete]
-      prev_stoch = tf.reshape(prev_stoch, shape)
-    x = tf.concat([prev_stoch, prev_action], -1)
-    x = self.get('img_in', tfkl.Dense, self._hidden)(x)
-    x = self.get('img_in_norm', NormLayer, self._norm)(x)
-    x = self._act(x)
+    # if self._discrete:
+    #   shape = prev_stoch.shape[:-2] + [self._stoch * self._discrete]
+    #   prev_stoch = tf.reshape(prev_stoch, shape)
+    # x = tf.concat([prev_stoch, prev_action], -1)
+    # predict stoch
+    if stoch is None:
+      x = self._cast(prev_state['deter'])
+      x = self.get('img_in', tfkl.Dense, self._hidden)(x)
+      x = self.get('img_in_norm', NormLayer, self._norm)(x)
+      x = self._act(x)
+      stats = self._suff_stats_ensemble(x)
+      index = tf.random.uniform((), 0, self._ensemble, tf.int32)
+      stats = {k: v[index] for k, v in stats.items()}
+      dist = self.get_dist(stats)
+      stoch = dist.sample() if sample else dist.mode()
+
+    # predict x with action
+    x = tf.concat([stoch, prev_action], -1)
+    # x = self.get('img_in', tfkl.Dense, self._hidden)(x)
+    # x = self.get('img_in_norm', NormLayer, self._norm)(x)
+    # x = self._act(x)
+
     deter = prev_state['deter']
     x, deter = self._cell(x, [deter])
     deter = deter[0]  # Keras wraps the state in a list.
-    stats = self._suff_stats_ensemble(x)
-    index = tf.random.uniform((), 0, self._ensemble, tf.int32)
-    stats = {k: v[index] for k, v in stats.items()}
-    dist = self.get_dist(stats)
-    stoch = dist.sample() if sample else dist.mode()
+
     prior = {'stoch': stoch, 'deter': deter, **stats}
     return prior
 

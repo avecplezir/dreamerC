@@ -99,14 +99,14 @@ pip3 install tensorflow==2.6.0 tensorflow_probability ruamel.yaml 'gym[atari]' d
 Train on Atari:
 
 ```sh
-python3 dreamerv2/train.py --logdir ~/logdir/atari_pong/dreamerv2/1 \
+CUDA_VISIBLE_DEVICES=0 python3 dreamerv2/train.py --logdir ~/logdir/atari_pong/dreamerv2/1 \
   --configs atari --task atari_pong
 ```
 
 Train on DM Control:
 
 ```sh
-python3 dreamerv2/train.py --logdir ~/logdir/dmc_walker_walk/dreamerv2/1 \
+CUDA_VISIBLE_DEVICES=0  python3 dreamerv2/train.py --logdir ~/logdir/dmc_walker_walk/dreamerv2/1 \
   --configs dmc_vision --task dmc_walker_walk
 ```
 

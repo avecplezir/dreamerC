@@ -200,7 +200,8 @@ class WorldModel(common.Module):
     video = tf.concat([truth, model, error], 2)
     B, T, H, W, C = video.shape
     video = video.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))
-    return tf.concat(tf.split(video, C // 3, 3), 1)
+    return video
+    # return tf.concat(tf.split(video, C // 3, 3), 1)
 
 
 class ActorCritic(common.Module):

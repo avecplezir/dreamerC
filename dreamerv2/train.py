@@ -6,6 +6,7 @@ import pathlib
 import re
 import sys
 import warnings
+import wandb
 
 try:
   import rich.traceback
@@ -37,6 +38,9 @@ def main():
     config = config.update(configs[name])
   config = common.Flags(config).parse(remaining)
 
+  wandb_id = config.wandb_id if config.wandb_id else wandb.util.generate_id()
+  config.wandb_id = wandb_id
+
   logdir = pathlib.Path(config.logdir).expanduser()
   logdir.mkdir(parents=True, exist_ok=True)
   config.save(logdir / 'config.yaml')
@@ -67,6 +71,18 @@ def main():
   ]
   logger = common.Logger(step, outputs, multiplier=config.action_repeat)
   metrics = collections.defaultdict(list)
+
+  wandb.init(
+    project='dreamerC',
+    config=config,
+    entity="avecplezir",
+    reinit=True,
+    # Restore parameters
+    resume="allow",
+    id=config.wandb_id,
+    name=config.logdir,
+  )
+  wandb.config.update(config, allow_val_change=True)
 
   should_train = common.Every(config.train_every)
   should_log = common.Every(config.log_every)
@@ -102,20 +118,26 @@ def main():
     print(f'{mode.title()} episode has {length} steps and return {score:.1f}.')
     logger.scalar(f'{mode}_return', score)
     logger.scalar(f'{mode}_length', length)
+    wandb.log({f'{mode}_return': score, f'{mode}_length': length}, commit=False)
     for key, value in ep.items():
       if re.match(config.log_keys_sum, key):
         logger.scalar(f'sum_{mode}_{key}', ep[key].sum())
+        wandb.log({f'sum_{mode}_{key}': ep[key].sum()}, commit=False)
       if re.match(config.log_keys_mean, key):
         logger.scalar(f'mean_{mode}_{key}', ep[key].mean())
+        wandb.log({f'mean_{mode}_{key}': ep[key].mean()}, commit=False)
       if re.match(config.log_keys_max, key):
         logger.scalar(f'max_{mode}_{key}', ep[key].max(0).mean())
+        wandb.log({f'max_{mode}_{key}': ep[key].max(0).mean()}, commit=False)
     should = {'train': should_video_train, 'eval': should_video_eval}[mode]
     if should(step):
       for key in config.log_keys_video:
         logger.video(f'{mode}_policy_{key}', ep[key])
+        wandb.log({f"{mode}_policy_{key}": wandb.Video(ep[key], fps=30, format="gif")}, commit=False)
     replay = dict(train=train_replay, eval=eval_replay)[mode]
     logger.add(replay.stats, prefix=mode)
     logger.write()
+    wandb.log(commit=True)
 
   print('Create envs.')
   num_eval_envs = min(config.envs, config.eval_eps)
@@ -170,6 +192,8 @@ def main():
         mets = train_agent(next(train_dataset))
         [metrics[key].append(value) for key, value in mets.items()]
     if should_log(step):
+      metrics_dict = {name: np.array(values, np.float64).mean() for name, values in metrics.items()}
+      wandb.log(metrics_dict)
       for name, values in metrics.items():
         logger.scalar(name, np.array(values, np.float64).mean())
         metrics[name].clear()

@@ -6,6 +6,7 @@ import pathlib
 import re
 import sys
 import warnings
+import wandb
 
 try:
   import rich.traceback
@@ -29,6 +30,15 @@ import common
 
 def main():
 
+  def convert_video_wandb(report):
+    video = np.transpose(report, (0, 3, 1, 2))
+    videos = []
+    rows = video.shape[1] // 3
+    for row in range(rows):
+      videos.append(video[:, row * 3: (row + 1) * 3])
+    video = np.concatenate(videos, 3)
+    return video
+
   configs = yaml.safe_load((
       pathlib.Path(sys.argv[0]).parent / 'configs.yaml').read_text())
   parsed, remaining = common.Flags(configs=['defaults']).parse(known_only=True)
@@ -36,6 +46,10 @@ def main():
   for name in parsed.configs:
     config = config.update(configs[name])
   config = common.Flags(config).parse(remaining)
+
+  wandb_id = wandb.util.generate_id() #config.wandb_id if config.wandb_id else
+  print('wandb_id', wandb_id)
+  config = config.update({'wandb_id': wandb_id})
 
   logdir = pathlib.Path(config.logdir).expanduser()
   logdir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +81,22 @@ def main():
   ]
   logger = common.Logger(step, outputs, multiplier=config.action_repeat)
   metrics = collections.defaultdict(list)
+
+  strings = config.logdir.split('/')[-3:]
+  name = ', '.join(strings)
+  print('name', name)
+  print('config.wandb_id', config.wandb_id)
+  wandb.init(
+    project='dreamerC',
+    config=config,
+    entity="avecplezir",
+    reinit=True,
+    # Restore parameters
+    resume="allow",
+    id=config.wandb_id,
+    name=name,
+  )
+  wandb.config.update(config, allow_val_change=True)
 
   should_train = common.Every(config.train_every)
   should_log = common.Every(config.log_every)
@@ -102,20 +132,27 @@ def main():
     print(f'{mode.title()} episode has {length} steps and return {score:.1f}.')
     logger.scalar(f'{mode}_return', score)
     logger.scalar(f'{mode}_length', length)
+    wandb.log({f'{mode}_return': score, f'{mode}_length': length}, commit=False)
     for key, value in ep.items():
       if re.match(config.log_keys_sum, key):
         logger.scalar(f'sum_{mode}_{key}', ep[key].sum())
+        wandb.log({f'sum_{mode}_{key}': ep[key].sum()}, commit=False)
       if re.match(config.log_keys_mean, key):
         logger.scalar(f'mean_{mode}_{key}', ep[key].mean())
+        wandb.log({f'mean_{mode}_{key}': ep[key].mean()}, commit=False)
       if re.match(config.log_keys_max, key):
         logger.scalar(f'max_{mode}_{key}', ep[key].max(0).mean())
+        wandb.log({f'max_{mode}_{key}': ep[key].max(0).mean()}, commit=False)
     should = {'train': should_video_train, 'eval': should_video_eval}[mode]
     if should(step):
       for key in config.log_keys_video:
         logger.video(f'{mode}_policy_{key}', ep[key])
+        video = convert_video_wandb(ep[key])
+        wandb.log({f"{mode}_policy_{key}": wandb.Video(video, fps=30, format="gif")}, commit=False)
     replay = dict(train=train_replay, eval=eval_replay)[mode]
     logger.add(replay.stats, prefix=mode)
     logger.write()
+    wandb.log({}, commit=True)
 
   print('Create envs.')
   num_eval_envs = min(config.envs, config.eval_eps)
@@ -170,17 +207,25 @@ def main():
         mets = train_agent(next(train_dataset))
         [metrics[key].append(value) for key, value in mets.items()]
     if should_log(step):
+      metrics_dict = {name: np.array(values, np.float64).mean() for name, values in metrics.items()}
+      wandb.log(metrics_dict)
       for name, values in metrics.items():
         logger.scalar(name, np.array(values, np.float64).mean())
         metrics[name].clear()
-      logger.add(agnt.report(next(report_dataset)), prefix='train')
+      report = agnt.report(next(report_dataset))
+      logger.add(report, prefix='train')
       logger.write(fps=True)
+      video = (np.transpose(report['openl_image'], (0, 3, 1, 2)) * 255).astype(np.uint8)
+      wandb.log({f"train_openl": wandb.Video(video, fps=30, format="gif")})
   train_driver.on_step(train_step)
 
   while step < config.steps:
     logger.write()
     print('Start evaluation.')
-    logger.add(agnt.report(next(eval_dataset)), prefix='eval')
+    report = agnt.report(next(eval_dataset))
+    logger.add(report, prefix='eval')
+    video = (np.transpose(report['openl_image'], (0, 3, 1, 2)) * 255).astype(np.uint8)
+    wandb.log({f"eval_openl": wandb.Video(video, fps=30, format="gif")})
     eval_driver(eval_policy, episodes=config.eval_eps)
     print('Start training.')
     train_driver(train_policy, steps=config.eval_every)

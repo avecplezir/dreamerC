@@ -28,6 +28,7 @@ defaults:
   log_keys_max: '^$'
   precision: 16
   jit: True
+  wandb_id: None
 
   # Agent
   clip_rewards: tanh

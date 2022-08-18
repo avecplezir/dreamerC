@@ -158,7 +158,7 @@ class WorldModel(common.Module):
         seq[key].append(value)
     seq = {k: tf.stack(v, 0) for k, v in seq.items()}
     if 'discount' in self.heads:
-      disc = self.heads['discount'](seq['feat']).mean()
+      disc = self.heads['discount'](seq['feat_recon']).mean()
       if is_terminal is not None:
         # Override discount prediction for the first step with the true
         # discount factor from the replay buffer.
@@ -166,7 +166,7 @@ class WorldModel(common.Module):
         true_first *= self.config.discount
         disc = tf.concat([true_first[None], disc[1:]], 0)
     else:
-      disc = self.config.discount * tf.ones(seq['feat'].shape[:-1])
+      disc = self.config.discount * tf.ones(seq['feat_recon'].shape[:-1])
     seq['discount'] = disc
     # Shift discount factors because they imply whether the following state
     # will be valid, not whether the current state is valid.
@@ -212,7 +212,8 @@ class WorldModel(common.Module):
     # video = tf.zeros_like(video)
     B, T, H, W, C = video.shape
     video = video.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))
-    return tf.concat(tf.split(video, C // 3, 3), 1)
+    return video
+    # return tf.concat(tf.split(video, C // 3, 3), 1)
 
 
 class ActorCritic(common.Module):

@@ -147,8 +147,11 @@ def main():
     if should(step):
       for key in config.log_keys_video:
         logger.video(f'{mode}_policy_{key}', ep[key])
-        video = convert_video_wandb(ep[key])
-        wandb.log({f"{mode}_policy_{key}": wandb.Video(video, fps=30, format="gif")}, commit=False)
+        try:
+          video = convert_video_wandb(ep[key])
+          wandb.log({f"{mode}_policy_{key}": wandb.Video(video, fps=30, format="gif")}, commit=False)
+        except:
+          pass
     replay = dict(train=train_replay, eval=eval_replay)[mode]
     logger.add(replay.stats, prefix=mode)
     logger.write()
